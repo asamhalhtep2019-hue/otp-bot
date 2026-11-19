@@ -1,4 +1,5 @@
 import os
+import re
 import threading
 from bs4 import BeautifulSoup
 from flask import Flask
@@ -25,41 +26,49 @@ def run_web():
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    )
+        " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
 }
 
 
+# دالة سحب الأرقام من مصدر مفتوح (sms24.me)
 def fetch_free_numbers():
   try:
-    res = requests.get(
-        "https://receive-smss.com", headers=HEADERS, timeout=10
-    )
+    res = requests.get("https://sms24.me", headers=HEADERS, timeout=15)
     soup = BeautifulSoup(res.text, "html.parser")
     numbers = []
-    for box in soup.find_all("div", class_="number-boxes-item")[:10]:
-      num = box.find("div", class_="number-boxes-itemm-number").text.strip()
-      country = box.find("div", class_="number-boxes-item-country").text.strip()
-      numbers.append((country, num))
+    for a in soup.find_all("a", href=re.compile(r"/en/numbers/\d+")):
+      text = a.get_text(" ", strip=True)
+      match = re.search(r"(\+\d+)", text)
+      if match:
+        num = match.group(1)
+        country = text.replace(num, "").strip() or "International"
+        if (country, num) not in numbers:
+          numbers.append((country, num))
+      if len(numbers) >= 12:
+        break
     return numbers
-  except Exception:
+  except Exception as e:
+    print("Error fetching numbers:", e)
     return []
 
 
+# دالة سحب الرسائل الواردة للرقم المختار
 def fetch_messages(phone_number):
   clean_num = phone_number.replace("+", "").strip()
-  url = f"https://receive-smss.comsms/{clean_num}/"
+  url = f"https://sms24.me/{clean_num}"
   try:
-    res = requests.get(url, headers=HEADERS, timeout=10)
+    res = requests.get(url, headers=HEADERS, timeout=15)
     soup = BeautifulSoup(res.text, "html.parser")
     msgs = []
-    rows = soup.find_all("div", class_="row message_details")[:5]
-    for r in rows:
-      sender = r.find("div", class_="col-md-3 senderr")
-      text = r.find("div", class_="col-md-6 msg")
-      if sender and text:
-        msgs.append(f"📩 **{sender.text.strip()}**:\n`{text.text.strip()}`")
+    for dd in soup.find_all("dd")[:6]:
+      msg_text = dd.get_text(" ", strip=True)
+      if msg_text:
+        msgs.append(f"📩 `{msg_text}`")
     return msgs
-  except Exception:
+  except Exception as e:
+    print("Error fetching messages:", e)
     return []
 
 
@@ -100,7 +109,7 @@ def handle_buttons(message):
     nums = fetch_free_numbers()
     if not nums:
       bot.edit_message_text(
-          "⚠️ تعذر جلب الأرقام حالياً، حاول بعد قليل.",
+          "⚠️ لم نتمكن من جلب الأرقام حالياً، حاول مرة أخرى بعد دقيقة.",
           message.chat.id,
           wait_msg.message_id,
       )
@@ -132,14 +141,16 @@ def handle_buttons(message):
     )
   elif message.text == "📈 My Stats":
     bot.send_message(
-        message.chat.id, f"📈 معرف حسابك: `{message.from_user.id}`", parse_mode="Markdown"
+        message.chat.id,
+        f"📈 معرف حسابك: `{message.from_user.id}`",
+        parse_mode="Markdown",
     )
 
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
   if call.data.startswith("num_") or call.data.startswith("ref_"):
-    phone = call.data.split("_")
+    phone = call.data.split("_")[1]
     bot.answer_callback_query(call.id, "🔄 جاري فحص الرسائل الواردة...")
     msgs = fetch_messages(phone)
 
@@ -155,7 +166,9 @@ def handle_callbacks(call):
 
     markup = InlineKeyboardMarkup()
     markup.add(
-        InlineKeyboardButton("🔄 تحديث الرسائل (Refresh)", callback_data=f"ref_{phone}")
+        InlineKeyboardButton(
+            "🔄 تحديث الرسائل (Refresh)", callback_data=f"ref_{phone}"
+        )
     )
 
     try:
