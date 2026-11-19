@@ -32,73 +32,95 @@ HEADERS = {
         "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
     ),
     "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://google.com",
 }
 
 
-# دالة السحب الذكي من عدة مصادر مفتوحة
-def fetch_free_numbers():
+# تحديد اسم وعلم الدولة بدقة
+def get_country_info(phone):
+  prefixes = [
+      ("+1", "🇺🇸 USA / Canada"),
+      ("+44", "🇬🇧 United Kingdom"),
+      ("+49", "🇩🇪 Germany"),
+      ("+33", "🇫🇷 France"),
+      ("+61", "🇦🇺 Australia"),
+      ("+55", "🇧🇷 Brazil"),
+      ("+91", "🇮🇳 India"),
+      ("+46", "🇸🇪 Sweden"),
+      ("+31", "🇳🇱 Netherlands"),
+      ("+34", "🇪🇸 Spain"),
+      ("+39", "🇮🇹 Italy"),
+      ("+48", "🇵🇱 Poland"),
+      ("+7", "🇷🇺 Russia"),
+      ("+62", "🇮🇩 Indonesia"),
+      ("+358", "🇫🇮 Finland"),
+      ("+45", "🇩🇰 Denmark"),
+  ]
+  for code, name in prefixes:
+    if phone.startswith(code):
+      return name
+  return "🌍 International"
+
+
+# دالة سحب الأرقام الكاملة والشغالة فقط (تستبعد الأرقام القصيرة أو المخفية)
+def fetch_working_numbers():
   numbers = []
+  seen = set()
 
-  # المصدر الأول: receivesms.cc
-  try:
-    res = requests.get("https://receivesms.cc", headers=HEADERS, timeout=12)
-    if res.status_code == 200:
-      soup = BeautifulSoup(res.text, "html.parser")
-      for item in soup.find_all("a", href=re.compile(r"/number/\d+")):
-        txt = item.get_text(" ", strip=True)
-        match = re.search(r"(\+\d{7,15})", txt)
-        if match:
-          num = match.group(1)
-          country = txt.replace(num, "").strip() or "Public"
-          if not any(n[1] == num for n in numbers):
-            numbers.append((country[:18], num, "cc"))
-        if len(numbers) >= 12:
-          return numbers
-  except Exception as e:
-    print("Source 1 error:", e)
-
-  # المصدر الثاني الاحتياطي: quackr.io
   try:
     res = requests.get(
-        "https://quackr.io", headers=HEADERS, timeout=12
+        "https://quackr.io", headers=HEADERS, timeout=15
     )
     if res.status_code == 200:
       soup = BeautifulSoup(res.text, "html.parser")
-      for match in re.findall(r"\+\d{8,15}", soup.get_text()):
-        if not any(n[1] == match for n in numbers):
-          numbers.append(("Free Number", match, "qk"))
-        if len(numbers) >= 12:
-          return numbers
+      # استخراج الرقم الكامل من الروابط الداخلية للصفحات النشطة
+      for a in soup.find_all("a", href=re.compile(r"/temporary-numbers/\d+")):
+        href = a.get("href", "")
+        match = re.search(r"/temporary-numbers/(\d{11,15})$", href)
+        if match:
+          digits = match.group(1)
+          # استبعاد الأرقام الوهمية المتكررة
+          if len(set(digits)) > 3 and digits not in seen:
+            seen.add(digits)
+            full_num = "+" + digits
+            country = get_country_info(full_num)
+            numbers.append((country, full_num))
+        if len(numbers) >= 15:
+          break
   except Exception as e:
-    print("Source 2 error:", e)
+    print("Error fetching numbers:", e)
 
   return numbers
 
 
-# دالة جلب الرسائل حسب المصدر
-def fetch_messages(phone_number, source):
+# دالة سحب أحدث الرسائل الواردة للرقم المختار
+def fetch_messages(phone_number):
   clean_num = phone_number.replace("+", "").strip()
   msgs = []
-
   try:
-    if source == "cc":
-      url = f"https://receivesms.ccnumber/{clean_num}"
-      res = requests.get(url, headers=HEADERS, timeout=12)
-      soup = BeautifulSoup(res.text, "html.parser")
-      for row in soup.find_all("tr")[1:6]:
-        cols = [c.get_text(" ", strip=True) for c in row.find_all("td")]
-        if len(cols) >= 2:
-          msgs.append(f"📩 **{cols[0]}**:\n`{cols[1]}`")
+    url = f"https://quackr.io/{clean_num}"
+    res = requests.get(url, headers=HEADERS, timeout=15)
+    soup = BeautifulSoup(res.text, "html.parser")
 
-    elif source == "qk":
-      url = f"https://quackr.io/{clean_num}"
-      res = requests.get(url, headers=HEADERS, timeout=12)
-      soup = BeautifulSoup(res.text, "html.parser")
-      for p in soup.find_all("p")[:8]:
+    for row in soup.find_all("tr")[1:7]:
+      cols = [c.get_text(" ", strip=True) for c in row.find_all("td")]
+      if len(cols) >= 2:
+        sender = cols[0]
+        body = cols[-1]
+        msgs.append(f"📩 **{sender}**:\n`{body}`")
+
+    if not msgs:
+      for p in soup.find_all(["p", "div"]):
         t = p.get_text(" ", strip=True)
-        if len(t) > 10 and any(char.isdigit() for char in t):
-          msgs.append(f"📩 `{t}`")
+        if (
+            15 < len(t) < 250
+            and any(c.isdigit() for c in t)
+            and "quackr" not in t.lower()
+        ):
+          entry = f"📩 `{t}`"
+          if entry not in msgs:
+            msgs.append(entry)
+        if len(msgs) >= 5:
+          break
   except Exception as e:
     print("Fetch msg error:", e)
 
@@ -122,7 +144,7 @@ def send_welcome(message):
   welcome_text = (
       f"🤖 **Welcome {user_name} !** 💠\n\n"
       "🟢 Free Public OTP Bot\n"
-      "🟢 Multi-Source Auto-Updated Numbers\n\n"
+      "🟢 Verified Full & Active Numbers\n\n"
       "⬇️ Please select an option below:"
   )
   bot.send_message(
@@ -137,27 +159,33 @@ def send_welcome(message):
 def handle_buttons(message):
   if message.text == "📞 Get number":
     wait_msg = bot.send_message(
-        message.chat.id, "⏳ جاري البحث وسحب الأرقام المتاحة..."
+        message.chat.id, "⏳ جاري فحص وجلب الأرقام الكاملة المتوفرة..."
     )
-    nums = fetch_free_numbers()
+    nums = fetch_working_numbers()
     if not nums:
       bot.edit_message_text(
-          "⚠️ جميع المصادر مشغولة حالياً أو تحظر السيرفر، حاول مرة أخرى بعد"
-          " دقيقة.",
+          "⚠️ تعذر جلب الأرقام حالياً، حاول مرة أخرى بعد دقيقة.",
           message.chat.id,
           wait_msg.message_id,
       )
       return
 
     markup = InlineKeyboardMarkup(row_width=1)
-    for country, num, src in nums:
+    for country, num in nums:
       markup.add(
           InlineKeyboardButton(
-              f"🌍 {country} | {num}", callback_data=f"num_{src}_{num}"
+              f"{country} | {num}", callback_data=f"num_{num}"
           )
       )
+    markup.add(
+        InlineKeyboardButton(
+            "🔄 تحديث قائمة الأرقام", callback_data="refresh_list"
+        )
+    )
+
     bot.edit_message_text(
-        "📱 **اختر رقماً من القائمة (أرقام عامة مجانية):**",
+        "📱 **الأرقام المتوفرة حالياً (أرقام كاملة وشغالة):**\n*(اختر رقماً لعرض"
+        " الرسائل الواردة عليه)*",
         message.chat.id,
         wait_msg.message_id,
         parse_mode="Markdown",
@@ -167,7 +195,7 @@ def handle_buttons(message):
   elif message.text == "📊 Live Traffic":
     bot.send_message(
         message.chat.id,
-        "📊 البوت متصل ويعمل بنظام السحب متعدد المصادر للأرقام العامة.",
+        "📊 البوت متصل ويعمل بنظام الفحص المباشر للأرقام الكاملة النشطة.",
     )
   elif message.text == "💳 My Wallet":
     bot.send_message(
@@ -184,12 +212,33 @@ def handle_buttons(message):
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
-  if call.data.startswith("num_") or call.data.startswith("ref_"):
-    parts = call.data.split("_")
-    src = parts[1]
-    phone = parts[2]
+  if call.data == "refresh_list":
+    bot.answer_callback_query(call.id, "🔄 جاري تحديث القائمة...")
+    nums = fetch_working_numbers()
+    if nums:
+      markup = InlineKeyboardMarkup(row_width=1)
+      for country, num in nums:
+        markup.add(
+            InlineKeyboardButton(
+                f"{country} | {num}", callback_data=f"num_{num}"
+            )
+        )
+      markup.add(
+          InlineKeyboardButton(
+              "🔄 تحديث قائمة الأرقام", callback_data="refresh_list"
+          )
+      )
+      try:
+        bot.edit_message_reply_markup(
+            call.message.chat.id, call.message.message_id, reply_markup=markup
+        )
+      except Exception:
+        pass
+
+  elif call.data.startswith("num_") or call.data.startswith("ref_"):
+    phone = call.data.split("_")[1]
     bot.answer_callback_query(call.id, "🔄 جاري فحص الرسائل الواردة...")
-    msgs = fetch_messages(phone, src)
+    msgs = fetch_messages(phone)
 
     msg_body = (
         "\n\n".join(msgs)
@@ -197,15 +246,18 @@ def handle_callbacks(call):
         else "📭 لا توجد رسائل حديثة لهذا الرقم، اضغط تحديث بعد طلب الكود."
     )
     text = (
-        f"📞 **الرقم المختار:** `{phone}`\n*(اضغط على الرقم لنسخه)*\n\n"
+        f"📞 **الرقم الكامل:** `{phone}`\n*(اضغط على الرقم لنسخه)*\n\n"
         f"📥 **آخر الرسائل الواردة:**\n{msg_body}"
     )
 
-    markup = InlineKeyboardMarkup()
+    markup = InlineKeyboardMarkup(row_width=1)
     markup.add(
         InlineKeyboardButton(
-            "🔄 تحديث الرسائل (Refresh)", callback_data=f"ref_{src}_{phone}"
-        )
+            "🔄 تحديث الرسائل (Refresh)", callback_data=f"ref_{phone}"
+        ),
+        InlineKeyboardButton(
+            "🔙 رجوع لقائمة الأرقام", callback_data="refresh_list"
+        ),
     )
 
     try:
