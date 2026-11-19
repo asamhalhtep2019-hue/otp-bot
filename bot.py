@@ -7,7 +7,7 @@ import requests
 import telebot
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
-BOT_TOKEN = "9051117304:AAHD2E3nPgiOCDVBetsefFYZKsxD95AjaIw"
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 bot = telebot.TeleBot(BOT_TOKEN)
 
 app = Flask(__name__)
